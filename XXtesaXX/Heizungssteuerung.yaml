@@ -1,0 +1,431 @@
+blueprint:
+  name: Heizungssteuerung V1
+  description: >
+    Heizungssteuerung mit Zeitplan, Eco-Override, Fenster-Frostschutz,
+    externer Kalibrierung (V5-Logik), Saisonmodus (Winter/Sommer),
+    Sommer-Ventiluebung und eigenem Party-Boost mit Countdown.
+  domain: automation
+
+  input:
+    trvs:
+      name: Heizungsregler
+      selector:
+        entity:
+          domain: climate
+          multiple: true
+
+    schedule_entity:
+      name: Zeitplan
+      selector:
+        entity:
+          domain: schedule
+
+    comfort_temp:
+      name: Komfort-Temperatur
+      selector:
+        entity:
+          domain: input_number
+
+    eco_temp:
+      name: Eco-Temperatur
+      selector:
+        entity:
+          domain: input_number
+
+    eco_force:
+      name: Eco erzwingen
+      default: []
+      selector:
+        entity:
+          domain: input_boolean
+
+    # ---------- Party-Boost ----------
+    party_boost_minutes:
+      name: Party-Boost Dauer (Minuten)
+      description: >
+        >0 erzwingt Komfort fuer diese Minuten (nur Winterbetrieb).
+        Zaehlt automatisch jede Minute herunter.
+      default: []
+      selector:
+        entity:
+          domain: input_number
+
+    # ---------- Saisonmodus ----------
+    season_mode:
+      name: Saisonmodus (input_select)
+      description: Muss die Optionen 'Winter' und 'Sommer' enthalten.
+      selector:
+        entity:
+          domain: input_select
+
+    summer_exercise_weekday:
+      name: Sommermodus - Uebung Wochentag
+      default: sun
+      selector:
+        select:
+          options:
+            - label: Montag
+              value: mon
+            - label: Dienstag
+              value: tue
+            - label: Mittwoch
+              value: wed
+            - label: Donnerstag
+              value: thu
+            - label: Freitag
+              value: fri
+            - label: Samstag
+              value: sat
+            - label: Sonntag
+              value: sun
+
+    summer_exercise_time:
+      name: Sommermodus - Uebung Uhrzeit
+      default: "12:00:00"
+      selector:
+        time: {}
+
+    summer_boost_entity:
+      name: Sommermodus - Boost (Minuten)
+      description: number.*boost_timeset_countdown
+      default: []
+      selector:
+        entity:
+          domain: number
+
+    summer_boost_hold_seconds:
+      name: Sommermodus - Boost Laufzeit (Sekunden)
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 120
+          step: 5
+          mode: slider
+
+    # ---------- Fenster ----------
+    window_override_enabled:
+      name: Fenstererkennung aktiv
+      default: false
+      selector:
+        boolean: {}
+
+    window_sensors:
+      name: Fenstersensoren (optional)
+      default: []
+      selector:
+        entity:
+          domain: binary_sensor
+          multiple: true
+
+    # ---------- Kalibrierung ----------
+    enable_calibration:
+      name: Kalibrierung aktivieren
+      default: false
+      selector:
+        boolean: {}
+
+    room_temperature_sensor:
+      name: Raumthermometer
+      default: []
+      selector:
+        entity:
+          domain: sensor
+
+    calibration_keyword:
+      name: Kalibrier-Keyword
+      default: local_temperature_calibration
+      selector:
+        text: {}
+
+    calibration_timeout:
+      name: Kalibrier-Timeout
+      default:
+        seconds: 30
+      selector:
+        duration: {}
+
+    calibration_delta:
+      name: Kalibrier-Schwelle
+      default: 0.5
+      selector:
+        number:
+          min: 0.0
+          max: 5.0
+          step: 0.1
+          mode: slider
+
+    throttle_seconds:
+      name: Mindestabstand Befehle
+      default: 3
+      selector:
+        number:
+          min: 0
+          max: 300
+          step: 1
+          mode: slider
+
+mode: restart
+
+trigger:
+  - platform: state
+    entity_id: !input schedule_entity
+  - platform: state
+    entity_id: !input comfort_temp
+  - platform: state
+    entity_id: !input eco_temp
+  - platform: state
+    entity_id: !input eco_force
+  - platform: state
+    entity_id: !input window_sensors
+  - platform: state
+    entity_id: !input season_mode
+  - platform: state
+    entity_id: !input party_boost_minutes
+
+  # Party-Boost Countdown (jede Minute)
+  - platform: time_pattern
+    minutes: "/1"
+    id: party_tick
+
+  # Sommer-Ventiluebung
+  - platform: time
+    at: !input summer_exercise_time
+
+  # Kalibrierung
+  - platform: state
+    entity_id: !input room_temperature_sensor
+    for: !input calibration_timeout
+  - platform: state
+    entity_id: !input trvs
+    attribute: current_temperature
+    for: !input calibration_timeout
+
+  - platform: homeassistant
+    event: start
+
+variables:
+  trvs: !input trvs
+  schedule_entity: !input schedule_entity
+  comfort_entity: !input comfort_temp
+  eco_entity: !input eco_temp
+  eco_force_entity: !input eco_force
+  party_boost_minutes_entity: !input party_boost_minutes
+
+  window_override_enabled: !input window_override_enabled
+  window_sensors: !input window_sensors
+
+  enable_calibration: !input enable_calibration
+  room_temperature_sensor: !input room_temperature_sensor
+  calibration_keyword: !input calibration_keyword
+  calibration_delta: !input calibration_delta
+
+  throttle: !input throttle_seconds
+
+  season_mode: !input season_mode
+  summer_exercise_weekday: !input summer_exercise_weekday
+  summer_boost_entity: !input summer_boost_entity
+  summer_boost_hold_seconds: !input summer_boost_hold_seconds
+
+  schedule_on: "{{ is_state(schedule_entity, 'on') }}"
+  comfort_value: "{{ states(comfort_entity) | float(20) }}"
+  eco_value: "{{ states(eco_entity) | float(18) }}"
+  eco_forced_on: "{{ eco_force_entity is string and eco_force_entity|length > 0 and is_state(eco_force_entity,'on') }}"
+
+  is_summer: "{{ is_state(season_mode, 'Sommer') }}"
+  today_wd: "{{ now().strftime('%a') | lower }}"
+  is_exercise_day: "{{ today_wd == summer_exercise_weekday }}"
+
+  party_boost_minutes_value: "{{ states(party_boost_minutes_entity) | int(0) if party_boost_minutes_entity else 0 }}"
+  party_boost_active: "{{ (not is_summer) and party_boost_minutes_value > 0 }}"
+
+  window_open: >-
+    {% if not window_override_enabled %}
+      false
+    {% elif window_sensors | length > 0 %}
+      {{ window_sensors | select('is_state','on') | list | length > 0 }}
+    {% else %}
+      {% set open_found = false %}
+      {% for t in trvs %}
+        {% if state_attr(t,'window') in ['OPEN','open',true,1] %}
+          {% set open_found = true %}
+        {% endif %}
+      {% endfor %}
+      {{ open_found }}
+    {% endif %}
+
+  target_temperature: >-
+    {% if eco_forced_on %}
+      {{ eco_value }}
+    {% elif schedule_on %}
+      {{ comfort_value }}
+    {% else %}
+      {{ eco_value }}
+    {% endif %}
+
+  external_temp: >-
+    {% if room_temperature_sensor %}
+      {{ states(room_temperature_sensor) | float(none) }}
+    {% else %}
+      {{ none }}
+    {% endif %}
+
+action:
+  - delay:
+      seconds: "{{ throttle }}"
+
+  # -------- Sommermodus --------
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_summer and is_exercise_day and summer_boost_entity }}"
+        sequence:
+          - service: climate.set_hvac_mode
+            target:
+              entity_id: "{{ trvs }}"
+            data:
+              hvac_mode: heat
+
+          - service: number.set_value
+            target:
+              entity_id: "{{ summer_boost_entity }}"
+            data:
+              value: 1
+
+          - delay:
+              seconds: "{{ summer_boost_hold_seconds }}"
+
+          - service: number.set_value
+            target:
+              entity_id: "{{ summer_boost_entity }}"
+            data:
+              value: 0
+
+          - service: climate.set_hvac_mode
+            target:
+              entity_id: "{{ trvs }}"
+            data:
+              hvac_mode: off
+
+          - stop: "Sommermodus: Ventiluebung"
+
+      - conditions:
+          - condition: template
+            value_template: "{{ is_summer }}"
+        sequence:
+          - service: climate.set_hvac_mode
+            target:
+              entity_id: "{{ trvs }}"
+            data:
+              hvac_mode: off
+          - stop: "Sommermodus: OFF"
+
+  # -------- Party-Boost (hoechste Prioritaet im Winter) --------
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ party_boost_active }}"
+        sequence:
+          - service: climate.set_hvac_mode
+            target:
+              entity_id: "{{ trvs }}"
+            data:
+              hvac_mode: heat
+
+          - service: climate.set_preset_mode
+            target:
+              entity_id: "{{ trvs }}"
+            data:
+              preset_mode: auto
+
+          - service: climate.set_temperature
+            target:
+              entity_id: "{{ trvs }}"
+            data:
+              temperature: "{{ comfort_value }}"
+
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.id == 'party_tick' }}"
+                sequence:
+                  - service: number.set_value
+                    target:
+                      entity_id: "{{ party_boost_minutes_entity }}"
+                    data:
+                      value: "{{ [0, party_boost_minutes_value - 1] | max }}"
+
+          - stop: "Party-Boost aktiv"
+
+  # -------- Fenster offen -> Frostschutz --------
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ window_open }}"
+        sequence:
+          - service: climate.set_hvac_mode
+            target:
+              entity_id: "{{ trvs }}"
+            data:
+              hvac_mode: heat
+
+          - service: climate.set_preset_mode
+            target:
+              entity_id: "{{ trvs }}"
+            data:
+              preset_mode: antifrost
+
+          - stop: "Fenster offen – Frostschutz"
+
+  # -------- Kalibrierung --------
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ enable_calibration and external_temp is not none }}"
+        sequence:
+          - repeat:
+              for_each: "{{ trvs }}"
+              sequence:
+                - variables:
+                    trv: "{{ repeat.item }}"
+                    trv_temp: "{{ state_attr(trv,'current_temperature') | float(none) }}"
+                    dev_id: "{{ device_id(trv) }}"
+                    cal_entity: >-
+                      {% set ents = device_entities(dev_id) | list %}
+                      {% set nums = ents | select('match','^number\\.') | list %}
+                      {% set hits = nums | select('search', calibration_keyword) | list %}
+                      {{ hits | first | default(none) }}
+                    old_offset: "{{ states(cal_entity) | float(0) if cal_entity else none }}"
+                    step: "{{ state_attr(cal_entity,'step') | float(1) if cal_entity else 1 }}"
+                    diff: "{{ external_temp - trv_temp if trv_temp is not none else none }}"
+                    new_offset: "{{ (old_offset + diff) if diff is not none else none }}"
+                    rounded: "{{ ((new_offset / step) | round(0) * step) if new_offset is not none else none }}"
+                - choose:
+                    - conditions:
+                        - condition: template
+                          value_template: "{{ cal_entity and diff is not none and (diff | abs) >= calibration_delta }}"
+                      sequence:
+                        - service: number.set_value
+                          target:
+                            entity_id: "{{ cal_entity }}"
+                          data:
+                            value: "{{ rounded }}"
+
+  # -------- Normalbetrieb --------
+  - service: climate.set_preset_mode
+    target:
+      entity_id: "{{ trvs }}"
+    data:
+      preset_mode: auto
+
+  - service: climate.set_hvac_mode
+    target:
+      entity_id: "{{ trvs }}"
+    data:
+      hvac_mode: heat
+
+  - service: climate.set_temperature
+    target:
+      entity_id: "{{ trvs }}"
+    data:
+      temperature: "{{ target_temperature }}"
