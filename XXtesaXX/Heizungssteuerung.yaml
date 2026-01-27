@@ -5,7 +5,7 @@ blueprint:
     externer Kalibrierung (V5-Logik), Saisonmodus (Winter/Sommer),
     Sommer-Ventiluebung (TRV-Boost), eigenem Party-Boost (Komfort erzwingen)
     mit Countdown sowie Manual-Override (TRV manuell drehen bis naechstes Schedule-Event).
-    Alle optionalen Helfer sind absturzsicher (wenn nicht gesetzt: Funktion aus, Rest laeuft).
+    Z2M-optimiert: TRV-Trigger nur auf Solltemperatur, Kalibrierung per 5-Minuten-Tick.
   domain: automation
 
   input:
@@ -162,13 +162,6 @@ blueprint:
       selector:
         text: {}
 
-    calibration_timeout:
-      name: Kalibrier-Timeout
-      default:
-        seconds: 30
-      selector:
-        duration: {}
-
     calibration_delta:
       name: Kalibrier-Schwelle
       default: 0.5
@@ -177,6 +170,16 @@ blueprint:
           min: 0.0
           max: 5.0
           step: 0.1
+          mode: slider
+
+    calibration_tick_minutes:
+      name: Kalibrier-Intervall (Minuten)
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          step: 1
           mode: slider
 
     throttle_seconds:
@@ -220,8 +223,10 @@ trigger:
     entity_id: !input party_boost_minutes
     id: party_changed
 
+  # Z2M: nur Solltemperatur-Änderung (sonst Dauerfeuer)
   - platform: state
     entity_id: !input trvs
+    attribute: temperature
     id: trv_changed
 
   # Party-Boost Countdown (jede Minute)
@@ -234,17 +239,10 @@ trigger:
     at: !input summer_exercise_time
     id: summer_time
 
-  # Kalibrierung Trigger
-  - platform: state
-    entity_id: !input room_temperature_sensor
-    for: !input calibration_timeout
-    id: ext_temp_stable
-
-  - platform: state
-    entity_id: !input trvs
-    attribute: current_temperature
-    for: !input calibration_timeout
-    id: trv_temp_stable
+  # Kalibrierung: alle X Minuten (Z2M-lastarm)
+  - platform: time_pattern
+    minutes: "/5"
+    id: calib_tick
 
   - platform: homeassistant
     event: start
@@ -275,6 +273,7 @@ variables:
   room_temperature_sensor: !input room_temperature_sensor
   calibration_keyword: !input calibration_keyword
   calibration_delta: !input calibration_delta
+  calibration_tick_minutes: !input calibration_tick_minutes
 
   throttle: !input throttle_seconds
 
@@ -521,11 +520,14 @@ action:
 
           - stop: "Fenster offen – Frostschutz"
 
-  # ---------- Kalibrierung (V5-Logik) ----------
+  # ---------- Kalibrierung (V5-Logik), nur beim calib_tick ----------
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ enable_calibration and external_temp is not none }}"
+            value_template: >-
+              {{ enable_calibration
+                 and (external_temp is not none)
+                 and (trigger is defined and trigger.id is defined and trigger.id == 'calib_tick') }}
         sequence:
           - repeat:
               for_each: "{{ trvs }}"
@@ -543,7 +545,7 @@ action:
                       {% if cal_entity is not none %}
                         {% set x = states(cal_entity) %}
                         {% if x in ['unknown','unavailable','none','None',''] %}
-                          {{ 0 }}
+                          0
                         {% else %}
                           {{ x | float(0) }}
                         {% endif %}
