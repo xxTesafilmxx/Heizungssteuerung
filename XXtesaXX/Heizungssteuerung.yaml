@@ -1,12 +1,7 @@
 blueprint:
   name: Heizungssteuerung V1
   description: >
-    Z2M-stabile Heizungssteuerung für Tuya/TRV602Z: Zeitplan (schedule) -> Komfort/Eco,
-    optional Eco-Force, Fenster -> antifrost, Sommer/Winter (input_select),
-    Sommer-Ventilübung (TRV-Boost), Party-Modus (Komfort erzwingen mit Countdown),
-    optionale externe Kalibrierung (V5-Logik) und optionaler Manual-Override.
-    Wichtig: Winterbetrieb nutzt hvac_mode=heat (damit TRV-internes Auto/Schedule NICHT greift).
-    Keine unnötigen Writes: hvac/preset/setpoint nur bei Abweichung.
+    Z2M-stabile Heizungssteuerung 
   domain: automation
 
   input:
