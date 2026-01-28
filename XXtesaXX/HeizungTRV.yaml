@@ -104,7 +104,7 @@ blueprint:
 
     poll_seconds:
       name: Poll-Intervall (Sekunden)
-      description: 30 ist ein guter Wert. (Hinweis: time_pattern kann nicht templated werden)
+      description: "30 ist ein guter Wert."
       default: 30
       selector:
         number:
