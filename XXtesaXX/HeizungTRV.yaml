@@ -4,12 +4,15 @@ blueprint:
     TRV602Z (Zigbee2MQTT): nutzt hvac_mode=auto und Presets eco/comfort/antifrost.
     TRV-internen Zeitplan deaktiviert es dauerhaft (text.*_schedule_* wird geleert),
     damit auto nicht den TRV-Schedule nutzt.
+
     Priorität:
       1) Sommer: hvac off
       2) Fenster offen: preset antifrost (+ holiday_temperature)
       3) Winter: hvac auto + preset eco/comfort (Eco-Force erzwingt eco)
+
     Manuelle Sollwertänderung am TRV:
       - übernimmt in passenden Helper (eco/comfort) je nach gewünschtem Preset.
+
     Externe Kalibrierung optional:
       - setzt local_temperature_calibration bei |Diff| >= delta, stabil, cooldown über last_changed.
   domain: automation
@@ -21,7 +24,6 @@ blueprint:
         entity:
           domain: climate
           multiple: false
-
 
     schedule_entity:
       name: Zeitplan (schedule.*)
@@ -102,7 +104,7 @@ blueprint:
 
     poll_seconds:
       name: Poll-Intervall (Sekunden)
-      description: 30 ist ein guter Wert.
+      description: 30 ist ein guter Wert. (Hinweis: time_pattern kann nicht templated werden)
       default: 30
       selector:
         number:
@@ -154,7 +156,7 @@ blueprint:
 
     poll_enabled:
       name: Silent-Poll aktiv
-      description: "Wenn AUS, wird der 30s-Poll ignoriert"
+      description: Wenn AUS, wird der 30s-Poll ignoriert
       default: false
       selector:
         boolean: {}
@@ -195,7 +197,7 @@ trigger:
     attribute: temperature
     id: manual_setpoint
 
-  # Poll / Drift
+  # Poll / Drift (fix auf 30s, da time_pattern nicht templated werden kann)
   - platform: time_pattern
     seconds: "/30"
     id: poll_tick
@@ -235,6 +237,8 @@ variables:
   calibration_delta: !input calibration_delta
   calibration_stable_for: !input calibration_stable_for
   calibration_cooldown_minutes: !input calibration_cooldown_minutes
+
+  poll_enabled: !input poll_enabled
 
   dev_id: "{{ device_id(trv) }}"
   dev_entities: "{{ device_entities(dev_id) | list }}"
@@ -318,14 +322,12 @@ variables:
       {{ none }}
     {% endif %}
 
-poll_enabled: !input poll_enabled
-
 action:
-- choose:
+  # Silent Poll: poll_tick abbrechen, wenn deaktiviert
+  - choose:
       - conditions:
           - condition: template
-            value_template: >
-              {{ trigger.id == 'poll_tick' and not poll_enabled }}
+            value_template: "{{ trigger.id == 'poll_tick' and not poll_enabled }}"
         sequence:
           - stop: "Silent poll deaktiviert – Abbruch"
 
@@ -334,7 +336,7 @@ action:
       - conditions:
           - condition: template
             value_template: >-
-              {{ trv_schedule_texts | length > 0 and trigger.id in ['ha_start','poll','season','schedule'] }}
+              {{ trv_schedule_texts | length > 0 and trigger.id in ['ha_start','poll_tick','season','schedule'] }}
         sequence:
           - repeat:
               for_each: "{{ trv_schedule_texts }}"
@@ -396,7 +398,7 @@ action:
               {{ enable_calibration
                  and calibration_number
                  and external_temp is not none
-                 and trigger.id in ['ext_temp_stable','trv_temp_stable','poll','ha_start'] }}
+                 and trigger.id in ['ext_temp_stable','trv_temp_stable','poll_tick','ha_start'] }}
         sequence:
           - variables:
               trv_temp: "{{ state_attr(trv,'current_temperature') | float(none) }}"
