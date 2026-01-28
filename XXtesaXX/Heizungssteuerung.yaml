@@ -1,12 +1,19 @@
 blueprint:
-  name: Heizungssteuerung V1.1
+  name: Heizungssteuerung V1.2
   description: >
-    Z2M-stabile Heizungssteuerung für Tuya/TRV602Z: Zeitplan (schedule) -> Komfort/Eco,
-    optional Eco-Force, Fenster -> antifrost, Sommer/Winter (input_select),
-    Sommer-Ventilübung (TRV-Boost), Party-Modus (Komfort erzwingen mit Countdown),
-    optionale externe Kalibrierung (V5-Logik) und optionaler Manual-Override.
-    Wichtig: Winterbetrieb nutzt hvac_mode=heat (damit TRV-internes Auto/Schedule NICHT greift).
-    Keine unnötigen Writes: hvac/preset/setpoint nur bei Abweichung.
+    Z2M-stabile Heizungssteuerung für Tuya/TRV602Z:
+    - Zeitplan (schedule) -> Komfort/Eco (nur bei on<->off Wechsel)
+    - optional Eco-Force
+    - Fenster (extern 0..n oder internes TRV-Window) -> antifrost
+    - Saisonmodus (Winter/Sommer) + Sommer-Ventilübung über TRV-Boost
+    - Party-Modus (Komfort erzwingen mit Countdown)
+    - optionale externe Kalibrierung (V5-Logik, Intervall)
+    - optional Manual-Override: manuelles Drehen am TRV gilt bis zum nächsten Schedule-Wechsel
+
+    WICHTIG:
+    - Winterbetrieb nutzt hvac_mode=heat (damit TRV-internes Auto/Schedule NICHT greift)
+    - Kein preset_mode:auto setzen (verhindert Rückfall in internen TRV-Plan)
+    - Loop-Schutz: eigene Rückmeldungen vom TRV werden ignoriert; bei manuellem Drehen wird Override gesetzt und der Lauf beendet.
   domain: automation
 
   input:
@@ -232,7 +239,7 @@ trigger:
     entity_id: !input party_boost_minutes
     id: party_value_changed
 
-  # Manual Override: nur Solltemperatur-Änderung am TRV
+  # Manual Override: manuelles Drehen am TRV (Setpoint)
   - platform: state
     entity_id: !input trvs
     attribute: temperature
@@ -353,7 +360,7 @@ variables:
     {% set m = calibration_tick_minutes | int(5) %}
     {{ (now().minute % (m if m > 0 else 5)) == 0 }}
 
-  # Basis-Zieltemperatur (Schedule + Eco-Force)
+  # Basisziel (Schedule + Eco-Force)
   base_target: >-
     {% if eco_forced_on %}
       {{ eco_value }}
@@ -363,7 +370,7 @@ variables:
       {{ eco_value }}
     {% endif %}
 
-  # Zieltemperatur nach Priorität (Party > EcoForce > Manual > Schedule/Eco)
+  # Ziel nach Priorität (Party > EcoForce > Manual > Schedule/Eco)
   target_temperature: >-
     {% if party_active %}
       {{ comfort_value }}
@@ -379,13 +386,27 @@ action:
   - delay:
       seconds: "{{ throttle }}"
 
+  # ---- Loop-Schutz: eigene Rückmeldungen ignorieren ----
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ trigger.id == 'trv_setpoint_changed'
+                 and trigger.to_state is not none
+                 and (
+                   trigger.to_state.context.id == this.context.id
+                   or trigger.to_state.context.parent_id == this.context.id
+                 ) }}
+        sequence:
+          - stop: "Eigene TRV-Rueckmeldung ignoriert"
+
   # ---- party_tick darf NICHT in Normalbetrieb fallen, wenn Party aus ----
   - choose:
       - conditions:
           - condition: template
             value_template: "{{ trigger.id == 'party_tick' and not party_active }}"
         sequence:
-          - stop: "party_tick ohne Party -> nichts tun"
+          - stop: "party_tick ohne Party"
 
   # ---- calib_tick nur alle X Minuten ausführen; sonst sofort STOP ----
   - choose:
@@ -393,9 +414,9 @@ action:
           - condition: template
             value_template: "{{ trigger.id == 'calib_tick' and (not calib_due or not enable_calibration) }}"
         sequence:
-          - stop: "calib_tick nicht fällig/aus -> nichts tun"
+          - stop: "calib_tick nicht fällig/aus"
 
-  # ---- Manual Override merken (TRV manuell drehen) ----
+  # ---- Manual Override merken (TRV manuell drehen) und Lauf beenden ----
   - choose:
       - conditions:
           - condition: template
@@ -405,7 +426,7 @@ action:
                  and (not is_summer)
                  and (manual_override_active_entity is string and manual_override_active_entity|length > 0)
                  and (manual_override_temp_entity is string and manual_override_temp_entity|length > 0)
-                 and trigger.to_state is not none and trigger.from_state is not none
+                 and trigger.to_state is not none
                  and (trigger.to_state.context.parent_id != this.context.id) }}
         sequence:
           - service: input_number.set_value
@@ -416,6 +437,7 @@ action:
           - service: input_boolean.turn_on
             target:
               entity_id: "{{ manual_override_active_entity }}"
+          - stop: "Manuell gesetzt -> Override aktiv"
 
   # ---- Manual Override reset beim nächsten Schedule-Wechsel ----
   - choose:
@@ -452,7 +474,7 @@ action:
               value: 0
           - stop: "Sommer: Ventilübung"
 
-  # ---- Sommer: komplett aus (nur wenn nicht schon off) ----
+  # ---- Sommer: komplett aus ----
   - choose:
       - conditions:
           - condition: template
@@ -488,7 +510,7 @@ action:
                     trv: "{{ repeat.item }}"
                     hvac: "{{ states(trv) }}"
                     preset: "{{ state_attr(trv,'preset_mode') }}"
-                # antifrost funktioniert zuverlässig, wenn hvac nicht off ist -> heat
+                # antifrost zuverlässig nur wenn hvac nicht off -> heat
                 - choose:
                     - conditions:
                         - condition: template
@@ -560,17 +582,15 @@ action:
                           data:
                             value: "{{ rounded }}"
 
-  # ---- Normalbetrieb Winter: hvac_mode=heat (damit TRV-internes Auto/Schedule NICHT greift) ----
+  # ---- Normalbetrieb Winter: hvac_mode=heat (keine auto/preset auto Writes) ----
   - repeat:
       for_each: "{{ trvs }}"
       sequence:
         - variables:
             trv: "{{ repeat.item }}"
             hvac: "{{ states(trv) }}"
-            preset: "{{ state_attr(trv,'preset_mode') }}"
             current_set: "{{ state_attr(trv,'temperature') | float(none) }}"
             desired_temp: "{{ target_temperature | float }}"
-        # Winter: hvac_mode heat (nur wenn abweichend)
         - choose:
             - conditions:
                 - condition: template
@@ -581,18 +601,6 @@ action:
                     entity_id: "{{ trv }}"
                   data:
                     hvac_mode: heat
-        # preset zurück auf auto (nur wenn nötig)
-        - choose:
-            - conditions:
-                - condition: template
-                  value_template: "{{ preset is not none and preset != 'auto' }}"
-              sequence:
-                - service: climate.set_preset_mode
-                  target:
-                    entity_id: "{{ trv }}"
-                  data:
-                    preset_mode: auto
-        # setpoint nur wenn wirklich abweichend
         - choose:
             - conditions:
                 - condition: template
@@ -602,4 +610,4 @@ action:
                   target:
                     entity_id: "{{ trv }}"
                   data:
-                    temperature: "{{ desired_temp }}"
+                    temperature: "{{ desired_temp }}
