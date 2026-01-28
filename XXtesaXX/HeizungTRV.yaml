@@ -22,6 +22,7 @@ blueprint:
           domain: climate
           multiple: false
 
+
     schedule_entity:
       name: Zeitplan (schedule.*)
       selector:
@@ -151,6 +152,13 @@ blueprint:
           step: 1
           mode: slider
 
+    poll_enabled:
+      name: Silent-Poll aktiv
+      description: "Wenn AUS, wird der 30s-Poll ignoriert"
+      default: false
+      selector:
+        boolean: {}
+
 mode: restart
 
 trigger:
@@ -190,7 +198,7 @@ trigger:
   # Poll / Drift
   - platform: time_pattern
     seconds: "/30"
-    id: poll
+    id: poll_tick
 
   # Kalibrierung stabil
   - platform: state
@@ -310,7 +318,17 @@ variables:
       {{ none }}
     {% endif %}
 
+poll_enabled: !input poll_enabled
+
 action:
+- choose:
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.id == 'poll_tick' and not poll_enabled }}
+        sequence:
+          - stop: "Silent poll deaktiviert – Abbruch"
+
   # 0) TRV-internen Zeitplan IMMER deaktivieren (text.*_schedule_* leeren)
   - choose:
       - conditions:
