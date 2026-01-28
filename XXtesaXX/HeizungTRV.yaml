@@ -105,7 +105,7 @@ blueprint:
     poll_seconds:
       name: Poll-Intervall (Sekunden)
       description: "30 ist ein guter Wert."
-      default: 30
+      default: 60
       selector:
         number:
           min: 10
