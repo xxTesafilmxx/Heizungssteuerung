@@ -1,0 +1,513 @@
+blueprint:
+  name: Heizungssteuerung V2 (TRV-Presets + Preset-Temperaturen)
+  description: >
+    TRV602Z (Zigbee2MQTT): Nutzt TRV-Presets eco/comfort/antifrost und setzt die
+    Preset-Temperaturen über number.*_eco_temperature / *_comfort_temperature / *_holiday_temperature.
+    Steuerlogik:
+      - Sommer (höchste Prio): hvac_mode off
+      - Fenster offen: preset antifrost (+ holiday_temperature)
+      - Winter: hvac_mode heat, preset comfort wenn schedule on, sonst eco (Eco-Force erzwingt eco)
+    Keine Auto-Nutzung (weder hvac_mode auto noch preset auto).
+    Manuelle Sollwertänderung am TRV:
+      - übernimmt in den passenden Helfer (eco/comfort) je nach aktuellem Zielpreset,
+        bis zum nächsten Event.
+    Externe Kalibrierung optional:
+      - Offset wird gesetzt, wenn |Diff| >= delta und stabil (for:)
+      - Cooldown basiert auf last_changed der Kalibrier-Number (keine extra Helfer).
+  domain: automation
+
+  input:
+    trv:
+      name: TRV (climate.*)
+      selector:
+        entity:
+          domain: climate
+          multiple: false
+
+    # Dein HA-Schedule-Helfer (comfort wenn "on", eco wenn "off")
+    schedule_entity:
+      name: Zeitplan (schedule.*)
+      selector:
+        entity:
+          domain: schedule
+          multiple: false
+
+    # Sommer/Winter
+    season_mode:
+      name: Saisonmodus (input_select)
+      description: Muss die Optionen 'Sommer' und 'Winter' enthalten.
+      selector:
+        entity:
+          domain: input_select
+          multiple: false
+
+    # Helfer-Temperaturen (werden in TRV-number Entitäten gespiegelt)
+    comfort_helper:
+      name: Komfort-Soll (input_number)
+      selector:
+        entity:
+          domain: input_number
+          multiple: false
+
+    eco_helper:
+      name: Eco-Soll (input_number)
+      selector:
+        entity:
+          domain: input_number
+          multiple: false
+
+    antifrost_helper:
+      name: Antifrost-Soll (input_number, optional)
+      description: Wenn leer -> 5°C.
+      default: []
+      selector:
+        entity:
+          domain: input_number
+          multiple: false
+
+    # Eco erzwingen
+    eco_force:
+      name: Eco erzwingen (input_boolean, optional)
+      default: []
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: false
+
+    # Fensterlogik
+    window_override_enabled:
+      name: Fensterlogik aktiv
+      default: false
+      selector:
+        boolean: {}
+
+    window_sensors:
+      name: Externe Fenstersensoren (binary_sensor, optional 0..n)
+      description: Wenn leer -> internes TRV window (binary_sensor.*_window) wird auto-gefunden.
+      default: []
+      selector:
+        entity:
+          domain: binary_sensor
+          multiple: true
+
+    # Manuelle TRV-Änderungen übernehmen
+    accept_manual_setpoint:
+      name: Manuelle Sollwertänderung am TRV in Helper übernehmen
+      default: true
+      selector:
+        boolean: {}
+
+    # Dämpfung / nur schreiben bei Abweichung
+    write_deadband:
+      name: Deadband fürs Schreiben (°C)
+      default: 0.1
+      selector:
+        number:
+          min: 0.0
+          max: 1.0
+          step: 0.05
+          mode: slider
+
+    poll_seconds:
+      name: Poll-Intervall (Sekunden)
+      description: Nur Abgleich/Drift (keine Loop-Schleuder). 30 ist ein guter Wert.
+      default: 30
+      selector:
+        number:
+          min: 10
+          max: 300
+          step: 5
+          mode: slider
+
+    # ---------- Kalibrierung ----------
+    enable_calibration:
+      name: Externe Kalibrierung aktiv
+      default: false
+      selector:
+        boolean: {}
+
+    room_temperature_sensor:
+      name: Externer Temperatursensor (sensor.*, optional)
+      default: []
+      selector:
+        entity:
+          domain: sensor
+          multiple: false
+
+    calibration_delta:
+      name: Kalibrier-Schwelle (°C)
+      default: 0.2
+      selector:
+        number:
+          min: 0.0
+          max: 2.0
+          step: 0.1
+          mode: slider
+
+    calibration_stable_for:
+      name: Stabilitätszeit (for:)
+      default:
+        minutes: 2
+      selector:
+        duration: {}
+
+    calibration_cooldown_minutes:
+      name: Cooldown nach Kalibrierung (Minuten)
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 180
+          step: 1
+          mode: slider
+
+mode: restart
+
+trigger:
+  # Events (echte Änderungen)
+  - platform: state
+    entity_id: !input season_mode
+    id: season
+
+  - platform: state
+    entity_id: !input schedule_entity
+    id: schedule
+
+  - platform: state
+    entity_id: !input comfort_helper
+    id: comfort_helper
+
+  - platform: state
+    entity_id: !input eco_helper
+    id: eco_helper
+
+  - platform: state
+    entity_id: !input antifrost_helper
+    id: antifrost_helper
+
+  - platform: state
+    entity_id: !input eco_force
+    id: eco_force
+
+  - platform: state
+    entity_id: !input window_sensors
+    id: windows
+
+  # Manuelles Drehen (wir nutzen temperature als User-Setpoint im Climate)
+  - platform: state
+    entity_id: !input trv
+    attribute: temperature
+    id: manual_setpoint
+
+  # Drift-Abgleich
+  - platform: time_pattern
+    seconds: "/30"
+    id: poll
+
+  # Kalibrierung stabil
+  - platform: state
+    entity_id: !input room_temperature_sensor
+    for: !input calibration_stable_for
+    id: ext_temp_stable
+
+  - platform: state
+    entity_id: !input trv
+    attribute: current_temperature
+    for: !input calibration_stable_for
+    id: trv_temp_stable
+
+  - platform: homeassistant
+    event: start
+    id: ha_start
+
+variables:
+  trv: !input trv
+  schedule_entity: !input schedule_entity
+  season_mode: !input season_mode
+  comfort_helper: !input comfort_helper
+  eco_helper: !input eco_helper
+  antifrost_helper: !input antifrost_helper
+  eco_force: !input eco_force
+  window_override_enabled: !input window_override_enabled
+  window_sensors: !input window_sensors
+  accept_manual_setpoint: !input accept_manual_setpoint
+  deadband: !input write_deadband
+  poll_seconds: !input poll_seconds
+
+  enable_calibration: !input enable_calibration
+  room_temperature_sensor: !input room_temperature_sensor
+  calibration_delta: !input calibration_delta
+  calibration_stable_for: !input calibration_stable_for
+  calibration_cooldown_minutes: !input calibration_cooldown_minutes
+
+  dev_id: "{{ device_id(trv) }}"
+  dev_entities: "{{ device_entities(dev_id) | list }}"
+
+  # Auto-find der TRV-number Entities (bei dir vorhanden)
+  comfort_number: >-
+    {% set nums = dev_entities | select('match','^number\\.') | list %}
+    {% set hits = nums | select('search','comfort_temperature') | list %}
+    {{ hits | first | default(none) }}
+
+  eco_number: >-
+    {% set nums = dev_entities | select('match','^number\\.') | list %}
+    {% set hits = nums | select('search','eco_temperature') | list %}
+    {{ hits | first | default(none) }}
+
+  holiday_number: >-
+    {% set nums = dev_entities | select('match','^number\\.') | list %}
+    {% set hits = nums | select('search','holiday_temperature') | list %}
+    {{ hits | first | default(none) }}
+
+  calibration_number: >-
+    {% set nums = dev_entities | select('match','^number\\.') | list %}
+    {% set hits = nums | select('search','local_temperature_calibration') | list %}
+    {{ hits | first | default(none) }}
+
+  internal_window_sensor: >-
+    {% set bins = dev_entities | select('match','^binary_sensor\\.') | list %}
+    {% set hits = bins | select('search','_window') | list %}
+    {{ hits | first | default(none) }}
+
+  # Betriebszustände
+  is_summer: "{{ is_state(season_mode, 'Sommer') }}"
+  schedule_on: "{{ is_state(schedule_entity, 'on') }}"
+  eco_forced: >-
+    {{ eco_force is string and eco_force|length > 0 and is_state(eco_force,'on') }}
+
+  desired_preset: >-
+    {% if eco_forced %}
+      eco
+    {% elif schedule_on %}
+      comfort
+    {% else %}
+      eco
+    {% endif %}
+
+  comfort_value: "{{ states(comfort_helper) | float(20) }}"
+  eco_value: "{{ states(eco_helper) | float(18) }}"
+  antifrost_value: >-
+    {% if antifrost_helper is string and antifrost_helper|length > 0 %}
+      {{ states(antifrost_helper) | float(5) }}
+    {% else %}
+      5
+    {% endif %}
+
+  # Fenster offen?
+  window_open: >-
+    {% if not window_override_enabled %}
+      false
+    {% elif window_sensors | length > 0 %}
+      {{ window_sensors | select('is_state','on') | list | length > 0 }}
+    {% else %}
+      {% if internal_window_sensor %}
+        {{ is_state(internal_window_sensor,'on') }}
+      {% else %}
+        false
+      {% endif %}
+    {% endif %}
+
+  # Externe Temperatur
+  external_temp: >-
+    {% if room_temperature_sensor is string and room_temperature_sensor|length > 0 %}
+      {% set s = states(room_temperature_sensor) %}
+      {% if s in ['unknown','unavailable','none','None',''] %}
+        {{ none }}
+      {% else %}
+        {{ s | float(none) }}
+      {% endif %}
+    {% else %}
+      {{ none }}
+    {% endif %}
+
+action:
+  # ==========================================================
+  # A) Manuelle Sollwertänderung übernehmen -> Helper anpassen -> Stop
+  # ==========================================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ trigger.id == 'manual_setpoint'
+                 and accept_manual_setpoint
+                 and trigger.to_state is not none
+                 and trigger.from_state is not none
+                 and (trigger.to_state.attributes.temperature != trigger.from_state.attributes.temperature)
+                 and (trigger.to_state.context.parent_id != this.context.id) }}
+        sequence:
+          - variables:
+              new_sp: "{{ trigger.to_state.attributes.temperature | float }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ desired_preset == 'eco' }}"
+                sequence:
+                  - service: input_number.set_value
+                    target:
+                      entity_id: !input eco_helper
+                    data:
+                      value: "{{ new_sp }}"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ desired_preset == 'comfort' }}"
+                sequence:
+                  - service: input_number.set_value
+                    target:
+                      entity_id: !input comfort_helper
+                    data:
+                      value: "{{ new_sp }}"
+          - stop: "Manuell geändert -> Helper übernommen (bis nächstes Event)"
+
+  # ==========================================================
+  # B) Kalibrierung (stabil + delta + cooldown über last_changed der number.*_local_temperature_calibration)
+  # ==========================================================
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ enable_calibration
+                 and calibration_number
+                 and external_temp is not none
+                 and trigger.id in ['ext_temp_stable','trv_temp_stable','poll','ha_start'] }}
+        sequence:
+          - variables:
+              trv_temp: "{{ state_attr(trv,'current_temperature') | float(none) }}"
+              diff: "{{ (external_temp - trv_temp) if trv_temp is not none else none }}"
+              step: "{{ state_attr(calibration_number,'step') | float(0.1) }}"
+              old_offset: "{{ states(calibration_number) | float(0) }}"
+              new_offset: "{{ (old_offset + diff) if diff is not none else none }}"
+              rounded: "{{ ((new_offset / step) | round(0) * step) if new_offset is not none else none }}"
+              cd_min: "{{ calibration_cooldown_minutes | int(10) }}"
+              last_cal_ts: >-
+                {% if calibration_number %}
+                  {{ as_timestamp(states[calibration_number].last_changed) }}
+                {% else %}
+                  0
+                {% endif %}
+              cooldown_ok: >-
+                {% if cd_min <= 0 %}
+                  true
+                {% else %}
+                  {{ (as_timestamp(now()) - last_cal_ts) >= (cd_min * 60) }}
+                {% endif %}
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ diff is not none
+                         and (diff | abs) >= (calibration_delta | float(0.2))
+                         and cooldown_ok
+                         and rounded is not none
+                         and ((rounded - old_offset) | abs) >= step }}
+                sequence:
+                  - service: number.set_value
+                    target:
+                      entity_id: "{{ calibration_number }}"
+                    data:
+                      value: "{{ rounded }}"
+
+  # ==========================================================
+  # C) Zielzustand berechnen und NUR bei Abweichung schreiben (kein Loop)
+  # ==========================================================
+  - choose:
+      # C1 Sommer -> OFF (höchste Prio)
+      - conditions:
+          - condition: template
+            value_template: "{{ is_summer }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ states(trv) != 'off' }}"
+                sequence:
+                  - service: climate.set_hvac_mode
+                    target:
+                      entity_id: "{{ trv }}"
+                    data:
+                      hvac_mode: off
+          - stop: "Sommermodus -> OFF"
+
+  # C2 Winter: immer heat (nie auto)
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ states(trv) != 'heat' }}"
+        sequence:
+          - service: climate.set_hvac_mode
+            target:
+              entity_id: "{{ trv }}"
+            data:
+              hvac_mode: heat
+
+  # C3 Fenster offen -> antifrost + holiday_temperature
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ window_open }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ state_attr(trv,'preset_mode') != 'antifrost' }}"
+                sequence:
+                  - service: climate.set_preset_mode
+                    target:
+                      entity_id: "{{ trv }}"
+                    data:
+                      preset_mode: antifrost
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ holiday_number
+                         and ((states(holiday_number) | float(none)) is none
+                              or ((states(holiday_number) | float(0)) - antifrost_value) | abs >= (deadband | float(0.1))) }}
+                sequence:
+                  - service: number.set_value
+                    target:
+                      entity_id: "{{ holiday_number }}"
+                    data:
+                      value: "{{ antifrost_value }}"
+          - stop: "Fenster offen -> Antifrost"
+
+  # C4 Fenster zu -> eco/comfort Preset + dazugehörige Preset-Temperatur setzen
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ state_attr(trv,'preset_mode') != desired_preset }}"
+        sequence:
+          - service: climate.set_preset_mode
+            target:
+              entity_id: "{{ trv }}"
+            data:
+              preset_mode: "{{ desired_preset }}"
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ desired_preset == 'eco'
+                 and eco_number
+                 and (((states(eco_number) | float(none)) is none)
+                      or ((states(eco_number) | float(0)) - eco_value) | abs >= (deadband | float(0.1))) }}
+        sequence:
+          - service: number.set_value
+            target:
+              entity_id: "{{ eco_number }}"
+            data:
+              value: "{{ eco_value }}"
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ desired_preset == 'comfort'
+                 and comfort_number
+                 and (((states(comfort_number) | float(none)) is none)
+                      or ((states(comfort_number) | float(0)) - comfort_value) | abs >= (deadband | float(0.1))) }}
+        sequence:
+          - service: number.set_value
+            target:
+              entity_id: "{{ comfort_number }}"
+            data:
+              value: "{{ comfort_value }}"
