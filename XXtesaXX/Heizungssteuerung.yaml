@@ -610,4 +610,4 @@ action:
                   target:
                     entity_id: "{{ trv }}"
                   data:
-                    temperature: "{{ desired_temp }}
+                    temperature: "{{ desired_temp }}"
