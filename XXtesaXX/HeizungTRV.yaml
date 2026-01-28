@@ -199,7 +199,7 @@ trigger:
 
   # Poll / Drift (fix auf 30s, da time_pattern nicht templated werden kann)
   - platform: time_pattern
-    seconds: "/30"
+    seconds: "/60"
     id: poll_tick
 
   # Kalibrierung stabil
