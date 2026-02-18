@@ -1,532 +1,499 @@
 blueprint:
-  name: Heizungssteuerung V2 (AUTO + Presets, TRV-Schedule OFF)
-  description: >
-    TRV602Z (Zigbee2MQTT): nutzt hvac_mode=auto und Presets eco/comfort/antifrost.
-    TRV-internen Zeitplan deaktiviert es dauerhaft (text.*_schedule_* wird geleert),
-    damit auto nicht den TRV-Schedule nutzt.
-
-    Priorität:
-      1) Sommer: hvac off
-      2) Fenster offen: preset antifrost (+ holiday_temperature)
-      3) Winter: hvac auto + preset eco/comfort (Eco-Force erzwingt eco)
-
-    Manuelle Sollwertänderung am TRV:
-      - übernimmt in passenden Helper (eco/comfort) je nach gewünschtem Preset.
-
-    Externe Kalibrierung optional:
-      - setzt local_temperature_calibration bei |Diff| >= delta, stabil, cooldown über last_changed.
+  name: Heizungssteuerung TRV mit manueller Override-Funktion
+  description: >-
+    Steuert ein Thermostat (TRV) basierend auf einem Zeitplan mit Comfort/Eco-Temperaturen.
+    
+    **NEU:** Manuelle Änderungen am TRV werden temporär übernommen und nach einstellbarer Zeit 
+    automatisch auf den ursprünglichen Wert zurückgesetzt.
+    
+    Features:
+    - Sommer-/Wintermodus
+    - Fensterkontakte
+    - Anwesenheitserkennung
+    - Boost-Funktion
+    - **Temporäre manuelle Überschreibung**
   domain: automation
-
   input:
     trv:
-      name: TRV (climate.*)
+      name: Thermostat (TRV)
+      description: Das zu steuernde Thermostat
       selector:
         entity:
-          domain: climate
-          multiple: false
-
+          filter:
+            - domain: climate
+    
     schedule_entity:
-      name: Zeitplan (schedule.*)
+      name: Zeitplan
+      description: Schedule-Entity (on = Comfort, off = Eco)
       selector:
         entity:
-          domain: schedule
-          multiple: false
-
-    season_mode:
-      name: Saisonmodus (input_select)
-      description: Muss die Optionen 'Sommer' und 'Winter' enthalten.
-      selector:
-        entity:
-          domain: input_select
-          multiple: false
-
+          filter:
+            - domain: schedule
+    
     comfort_helper:
-      name: Komfort-Soll (input_number)
+      name: Comfort-Temperatur Helper
+      description: Input Number für Comfort-Temperatur
       selector:
         entity:
-          domain: input_number
-          multiple: false
-
+          filter:
+            - domain: input_number
+    
     eco_helper:
-      name: Eco-Soll (input_number)
+      name: Eco-Temperatur Helper
+      description: Input Number für Eco-Temperatur
       selector:
         entity:
-          domain: input_number
-          multiple: false
-
-    antifrost_helper:
-      name: Antifrost-Soll (input_number, optional)
-      description: Wenn leer -> 5°C.
+          filter:
+            - domain: input_number
+    
+    trv_schedule_text:
+      name: TRV Schedule Text Entity
+      description: Text-Entity für TRV-eigenen Zeitplan (wird deaktiviert)
       default: []
       selector:
         entity:
-          domain: input_number
-          multiple: false
-
-    eco_force:
-      name: Eco erzwingen (input_boolean, optional)
-      default: []
-      selector:
-        entity:
-          domain: input_boolean
-          multiple: false
-
-    window_override_enabled:
-      name: Fensterlogik aktiv
-      default: false
-      selector:
-        boolean: {}
-
-    window_sensors:
-      name: Externe Fenstersensoren (binary_sensor, optional 0..n)
-      description: Wenn leer -> internes TRV window (binary_sensor.*_window) wird auto-gefunden.
-      default: []
-      selector:
-        entity:
-          domain: binary_sensor
+          filter:
+            - domain: text
           multiple: true
-
+    
+    summer_mode:
+      name: Sommermodus
+      description: Input Boolean für Sommermodus (Heizung aus)
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+    
+    summer_temp:
+      name: Sommer-Temperatur
+      description: Zieltemperatur im Sommermodus
+      default: 5
+      selector:
+        number:
+          min: 5
+          max: 15
+          step: 0.5
+          unit_of_measurement: "°C"
+    
+    window_sensors:
+      name: Fensterkontakte
+      description: Fensterkontakte (bei offen -> Heizung aus)
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              device_class: window
+          multiple: true
+    
+    window_open_temp:
+      name: Fenster-offen-Temperatur
+      description: Zieltemperatur bei geöffnetem Fenster
+      default: 5
+      selector:
+        number:
+          min: 5
+          max: 15
+          step: 0.5
+          unit_of_measurement: "°C"
+    
+    presence_entity:
+      name: Anwesenheit
+      description: Entity für Anwesenheitserkennung (optional)
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+    
+    away_temp:
+      name: Abwesenheits-Temperatur
+      description: Zieltemperatur bei Abwesenheit
+      default: 16
+      selector:
+        number:
+          min: 5
+          max: 20
+          step: 0.5
+          unit_of_measurement: "°C"
+    
+    boost_entity:
+      name: Boost-Funktion
+      description: Input Boolean für Boost-Modus (optional)
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+    
+    boost_temp:
+      name: Boost-Temperatur
+      description: Zieltemperatur im Boost-Modus
+      default: 25
+      selector:
+        number:
+          min: 20
+          max: 30
+          step: 0.5
+          unit_of_measurement: "°C"
+    
     accept_manual_setpoint:
-      name: Manuelle Sollwertänderung am TRV in Helper übernehmen
+      name: Manuelle Änderungen akzeptieren
+      description: Erlaube temporäre manuelle Änderungen am TRV
       default: true
       selector:
-        boolean: {}
-
-    write_deadband:
-      name: Deadband fürs Schreiben (°C)
-      default: 0.1
+        boolean:
+    
+    manual_override_duration:
+      name: Dauer der manuellen Überschreibung
+      description: Nach dieser Zeit wird der ursprüngliche Wert wiederhergestellt
+      default: 2
       selector:
         number:
-          min: 0.0
-          max: 1.0
-          step: 0.05
+          min: 0.5
+          max: 12
+          step: 0.5
+          unit_of_measurement: "h"
           mode: slider
-
-    poll_seconds:
-      name: Poll-Intervall (Sekunden)
-      description: "30 ist ein guter Wert."
-      default: 60
-      selector:
-        number:
-          min: 10
-          max: 300
-          step: 5
-          mode: slider
-
-    enable_calibration:
-      name: Externe Kalibrierung aktiv
-      default: false
-      selector:
-        boolean: {}
-
-    room_temperature_sensor:
-      name: Externer Temperatursensor (sensor.*, optional)
-      default: []
+    
+    # NEU: Helper-Entities als Input
+    manual_override_active:
+      name: Override Status Helper
+      description: Input Boolean für Override-Status (z.B. input_boolean.trv_wohnzimmer_manual_override_active)
       selector:
         entity:
-          domain: sensor
-          multiple: false
-
-    calibration_delta:
-      name: Kalibrier-Schwelle (°C)
-      default: 0.2
+          filter:
+            - domain: input_boolean
+    
+    manual_override_time:
+      name: Override Zeitstempel Helper
+      description: Input DateTime für Override-Zeitstempel (z.B. input_datetime.trv_wohnzimmer_manual_override_time)
       selector:
-        number:
-          min: 0.0
-          max: 2.0
-          step: 0.1
-          mode: slider
-
-    calibration_stable_for:
-      name: Stabilitätszeit (for:)
-      default:
-        minutes: 2
+        entity:
+          filter:
+            - domain: input_datetime
+    
+    original_setpoint:
+      name: Original Sollwert Helper
+      description: Input Number für Original-Sollwert (z.B. input_number.trv_wohnzimmer_original_setpoint)
       selector:
-        duration: {}
-
-    calibration_cooldown_minutes:
-      name: Cooldown nach Kalibrierung (Minuten)
-      default: 10
-      selector:
-        number:
-          min: 0
-          max: 180
-          step: 1
-          mode: slider
-
-    poll_enabled:
-      name: Silent-Poll aktiv
-      description: Wenn AUS, wird der 30s-Poll ignoriert
-      default: false
-      selector:
-        boolean: {}
+        entity:
+          filter:
+            - domain: input_number
 
 mode: restart
+max_exceeded: silent
 
 trigger:
-  - platform: state
-    entity_id: !input season_mode
-    id: season
-
+  # Zeitplan ändert sich
   - platform: state
     entity_id: !input schedule_entity
     id: schedule
-
+  
+  # Comfort-Temperatur ändert sich
   - platform: state
     entity_id: !input comfort_helper
-    id: comfort_helper
-
+    id: comfort_temp
+  
+  # Eco-Temperatur ändert sich
   - platform: state
     entity_id: !input eco_helper
-    id: eco_helper
-
+    id: eco_temp
+  
+  # Sommermodus ändert sich
   - platform: state
-    entity_id: !input antifrost_helper
-    id: antifrost_helper
-
-  - platform: state
-    entity_id: !input eco_force
-    id: eco_force
-
+    entity_id: !input summer_mode
+    id: summer
+  
+  # Fensterkontakt ändert sich
   - platform: state
     entity_id: !input window_sensors
-    id: windows
-
+    id: window
+  
+  # Anwesenheit ändert sich
+  - platform: state
+    entity_id: !input presence_entity
+    id: presence
+  
+  # Boost ändert sich
+  - platform: state
+    entity_id: !input boost_entity
+    id: boost
+  
+  # Manuelle Änderung am TRV
   - platform: state
     entity_id: !input trv
     attribute: temperature
     id: manual_setpoint
-
-  # Poll / Drift (fix auf 30s, da time_pattern nicht templated werden kann)
-  - platform: time_pattern
-    seconds: "/60"
-    id: poll_tick
-
-  # Kalibrierung stabil
-  - platform: state
-    entity_id: !input room_temperature_sensor
-    for: !input calibration_stable_for
-    id: ext_temp_stable
-
-  - platform: state
-    entity_id: !input trv
-    attribute: current_temperature
-    for: !input calibration_stable_for
-    id: trv_temp_stable
-
+  
+  # Home Assistant Start
   - platform: homeassistant
     event: start
-    id: ha_start
+    id: startup
+  
+  # Manueller Override-Timer (alle 5 Minuten prüfen)
+  - platform: time_pattern
+    minutes: "/5"
+    id: check_override_timer
 
 variables:
   trv: !input trv
   schedule_entity: !input schedule_entity
-  season_mode: !input season_mode
   comfort_helper: !input comfort_helper
   eco_helper: !input eco_helper
-  antifrost_helper: !input antifrost_helper
-  eco_force: !input eco_force
-  window_override_enabled: !input window_override_enabled
+  trv_schedule_texts: !input trv_schedule_text
+  summer_mode_entity: !input summer_mode
+  summer_temp: !input summer_temp
   window_sensors: !input window_sensors
+  window_open_temp: !input window_open_temp
+  presence_entity: !input presence_entity
+  away_temp: !input away_temp
+  boost_entity: !input boost_entity
+  boost_temp: !input boost_temp
   accept_manual_setpoint: !input accept_manual_setpoint
-  deadband: !input write_deadband
-  poll_seconds: !input poll_seconds
-
-  enable_calibration: !input enable_calibration
-  room_temperature_sensor: !input room_temperature_sensor
-  calibration_delta: !input calibration_delta
-  calibration_stable_for: !input calibration_stable_for
-  calibration_cooldown_minutes: !input calibration_cooldown_minutes
-
-  poll_enabled: !input poll_enabled
-
-  dev_id: "{{ device_id(trv) }}"
-  dev_entities: "{{ device_entities(dev_id) | list }}"
-
-  # TRV schedule texts (werden geleert)
-  trv_schedule_texts: >-
-    {% set texts = dev_entities | select('match','^text\\.') | list %}
-    {% set hits = texts | select('search','_schedule_') | list %}
-    {{ hits }}
-
-  comfort_number: >-
-    {% set nums = dev_entities | select('match','^number\\.') | list %}
-    {% set hits = nums | select('search','comfort_temperature') | list %}
-    {{ hits | first | default(none) }}
-
-  eco_number: >-
-    {% set nums = dev_entities | select('match','^number\\.') | list %}
-    {% set hits = nums | select('search','eco_temperature') | list %}
-    {{ hits | first | default(none) }}
-
-  holiday_number: >-
-    {% set nums = dev_entities | select('match','^number\\.') | list %}
-    {% set hits = nums | select('search','holiday_temperature') | list %}
-    {{ hits | first | default(none) }}
-
-  calibration_number: >-
-    {% set nums = dev_entities | select('match','^number\\.') | list %}
-    {% set hits = nums | select('search','local_temperature_calibration') | list %}
-    {{ hits | first | default(none) }}
-
-  internal_window_sensor: >-
-    {% set bins = dev_entities | select('match','^binary_sensor\\.') | list %}
-    {% set hits = bins | select('search','_window') | list %}
-    {{ hits | first | default(none) }}
-
-  is_summer: "{{ is_state(season_mode, 'Sommer') }}"
-  schedule_on: "{{ is_state(schedule_entity, 'on') }}"
-  eco_forced: >-
-    {{ eco_force is string and eco_force|length > 0 and is_state(eco_force,'on') }}
-
-  desired_preset: >-
-    {% if eco_forced %}
-      eco
-    {% elif schedule_on %}
-      comfort
-    {% else %}
-      eco
-    {% endif %}
-
-  comfort_value: "{{ states(comfort_helper) | float(20) }}"
-  eco_value: "{{ states(eco_helper) | float(18) }}"
-  antifrost_value: >-
-    {% if antifrost_helper is string and antifrost_helper|length > 0 %}
-      {{ states(antifrost_helper) | float(5) }}
-    {% else %}
-      5
-    {% endif %}
-
-  window_open: >-
-    {% if not window_override_enabled %}
-      false
-    {% elif window_sensors | length > 0 %}
-      {{ window_sensors | select('is_state','on') | list | length > 0 }}
-    {% else %}
-      {% if internal_window_sensor %}
-        {{ is_state(internal_window_sensor,'on') }}
+  manual_override_duration: !input manual_override_duration
+  
+  # Helper-Entities aus Input
+  manual_override_active_entity: !input manual_override_active
+  manual_override_time_entity: !input manual_override_time
+  original_setpoint_entity: !input original_setpoint
+  
+  # Prüfe ob Override abgelaufen ist
+  override_expired: >-
+    {% if is_state(manual_override_active_entity, 'on') %}
+      {% set override_time = states(manual_override_time_entity) %}
+      {% if override_time not in ['unknown', 'unavailable', ''] %}
+        {% set elapsed_hours = (as_timestamp(now()) - as_timestamp(override_time)) / 3600 %}
+        {{ elapsed_hours >= (manual_override_duration | float(2)) }}
       {% else %}
         false
       {% endif %}
-    {% endif %}
-
-  external_temp: >-
-    {% if room_temperature_sensor is string and room_temperature_sensor|length > 0 %}
-      {% set s = states(room_temperature_sensor) %}
-      {% if s in ['unknown','unavailable','none','None',''] %}
-        {{ none }}
-      {% else %}
-        {{ s | float(none) }}
-      {% endif %}
     {% else %}
-      {{ none }}
+      false
     {% endif %}
 
 action:
-  # Silent Poll: poll_tick abbrechen, wenn deaktiviert
+  # TRV-eigenen Zeitplan deaktivieren
+  - repeat:
+      for_each: "{{ trv_schedule_texts }}"
+      sequence:
+        - service: text.set_value
+          target:
+            entity_id: "{{ repeat.item }}"
+          data:
+            value: ""
+  
+  # ========================================
+  # MANUELLE ÜBERSCHREIBUNGS-LOGIK
+  # ========================================
+  
   - choose:
+      # ----------------------------------------
+      # Fall 1: Override-Timer abgelaufen
+      # ----------------------------------------
       - conditions:
           - condition: template
-            value_template: "{{ trigger.id == 'poll_tick' and not poll_enabled }}"
+            value_template: "{{ override_expired }}"
         sequence:
-          - stop: "Silent poll deaktiviert – Abbruch"
-
-  # 0) TRV-internen Zeitplan IMMER deaktivieren (text.*_schedule_* leeren)
-  - choose:
+          - service: input_boolean.turn_off
+            target:
+              entity_id: "{{ manual_override_active_entity }}"
+          - service: system_log.write
+            data:
+              message: >-
+                TRV {{ trv }}: Manuelle Überschreibung nach {{ manual_override_duration }}h abgelaufen.
+                Stelle ursprünglichen Wert wieder her.
+              level: info
+      
+      # ----------------------------------------
+      # Fall 2: Manuelle Änderung am TRV erkannt
+      # ----------------------------------------
       - conditions:
+          - condition: trigger
+            id: manual_setpoint
           - condition: template
-            value_template: >-
-              {{ trv_schedule_texts | length > 0 and trigger.id in ['ha_start','poll_tick','season','schedule'] }}
-        sequence:
-          - repeat:
-              for_each: "{{ trv_schedule_texts }}"
-              sequence:
-                - variables:
-                    t: "{{ repeat.item }}"
-                    v: "{{ states(t) }}"
-                - choose:
-                    - conditions:
-                        - condition: template
-                          value_template: "{{ v not in ['','-','unknown','unavailable', none] }}"
-                      sequence:
-                        - service: text.set_value
-                          target:
-                            entity_id: "{{ t }}"
-                          data:
-                            value: ""
-
-  # A) Manuelle Sollwertänderung übernehmen -> Helper anpassen -> Stop
-  - choose:
-      - conditions:
-          - condition: template
-            value_template: >-
-              {{ trigger.id == 'manual_setpoint'
-                 and accept_manual_setpoint
-                 and trigger.to_state is not none
-                 and trigger.from_state is not none
-                 and (trigger.to_state.attributes.temperature != trigger.from_state.attributes.temperature)
-                 and (trigger.to_state.context.parent_id != this.context.id) }}
-        sequence:
-          - variables:
-              new_sp: "{{ trigger.to_state.attributes.temperature | float }}"
-          - choose:
-              - conditions:
-                  - condition: template
-                    value_template: "{{ desired_preset == 'eco' }}"
-                sequence:
-                  - service: input_number.set_value
-                    target:
-                      entity_id: !input eco_helper
-                    data:
-                      value: "{{ new_sp }}"
-              - conditions:
-                  - condition: template
-                    value_template: "{{ desired_preset == 'comfort' }}"
-                sequence:
-                  - service: input_number.set_value
-                    target:
-                      entity_id: !input comfort_helper
-                    data:
-                      value: "{{ new_sp }}"
-          - stop: "Manuell geändert -> Helper übernommen"
-
-  # B) Kalibrierung
-  - choose:
-      - conditions:
+            value_template: "{{ accept_manual_setpoint }}"
           - condition: template
             value_template: >-
-              {{ enable_calibration
-                 and calibration_number
-                 and external_temp is not none
-                 and trigger.id in ['ext_temp_stable','trv_temp_stable','poll_tick','ha_start'] }}
+              {{ trigger.to_state.attributes.temperature != trigger.from_state.attributes.temperature }}
+          - condition: template
+            value_template: >-
+              {{ trigger.to_state.context.user_id == none and 
+                 trigger.to_state.context.parent_id == none }}
         sequence:
-          - variables:
-              trv_temp: "{{ state_attr(trv,'current_temperature') | float(none) }}"
-              diff: "{{ (external_temp - trv_temp) if trv_temp is not none else none }}"
-              step: "{{ state_attr(calibration_number,'step') | float(0.1) }}"
-              old_offset: "{{ states(calibration_number) | float(0) }}"
-              new_offset: "{{ (old_offset + diff) if diff is not none else none }}"
-              rounded: "{{ ((new_offset / step) | round(0) * step) if new_offset is not none else none }}"
-              cd_min: "{{ calibration_cooldown_minutes | int(10) }}"
-              last_cal_ts: "{{ as_timestamp(states[calibration_number].last_changed) if calibration_number else 0 }}"
-              cooldown_ok: >-
-                {% if cd_min <= 0 %} true
-                {% else %} {{ (as_timestamp(now()) - last_cal_ts) >= (cd_min * 60) }}
+          # Aktuellen Soll-Wert speichern (vor manueller Änderung)
+          - service: input_number.set_value
+            target:
+              entity_id: "{{ original_setpoint_entity }}"
+            data:
+              value: >-
+                {% if is_state(schedule_entity, 'on') %}
+                  {{ states(comfort_helper) | float }}
+                {% else %}
+                  {{ states(eco_helper) | float }}
                 {% endif %}
-          - choose:
-              - conditions:
-                  - condition: template
-                    value_template: >-
-                      {{ diff is not none
-                         and (diff | abs) >= (calibration_delta | float(0.2))
-                         and cooldown_ok
-                         and rounded is not none
-                         and ((rounded - old_offset) | abs) >= step }}
-                sequence:
-                  - service: number.set_value
-                    target:
-                      entity_id: "{{ calibration_number }}"
-                    data:
-                      value: "{{ rounded }}"
-
-  # C) Steuerlogik
-  # C1 Sommer -> OFF
-  - choose:
-      - conditions:
-          - condition: template
-            value_template: "{{ is_summer }}"
-        sequence:
-          - choose:
-              - conditions:
-                  - condition: template
-                    value_template: "{{ states(trv) != 'off' }}"
-                sequence:
-                  - service: climate.set_hvac_mode
-                    target:
-                      entity_id: "{{ trv }}"
-                    data:
-                      hvac_mode: off
-          - stop: "Sommermodus -> OFF"
-
-  # C2 Winter -> immer AUTO (damit TRV nicht gegen uns umschaltet)
-  - choose:
-      - conditions:
-          - condition: template
-            value_template: "{{ states(trv) != 'auto' }}"
-        sequence:
-          - service: climate.set_hvac_mode
+          
+          # Override aktivieren
+          - service: input_boolean.turn_on
             target:
-              entity_id: "{{ trv }}"
-            data:
-              hvac_mode: auto
-
-  # C3 Fenster offen -> antifrost
-  - choose:
-      - conditions:
-          - condition: template
-            value_template: "{{ window_open }}"
-        sequence:
-          - choose:
-              - conditions:
-                  - condition: template
-                    value_template: "{{ state_attr(trv,'preset_mode') != 'antifrost' }}"
-                sequence:
-                  - service: climate.set_preset_mode
-                    target:
-                      entity_id: "{{ trv }}"
-                    data:
-                      preset_mode: antifrost
-          - choose:
-              - conditions:
-                  - condition: template
-                    value_template: >-
-                      {{ holiday_number
-                         and ((states(holiday_number) | float(0) - antifrost_value) | abs >= (deadband | float(0.1))) }}
-                sequence:
-                  - service: number.set_value
-                    target:
-                      entity_id: "{{ holiday_number }}"
-                    data:
-                      value: "{{ antifrost_value }}"
-          - stop: "Fenster offen -> Antifrost"
-
-  # C4 Fenster zu -> eco/comfort Preset
-  - choose:
-      - conditions:
-          - condition: template
-            value_template: "{{ state_attr(trv,'preset_mode') != desired_preset }}"
-        sequence:
-          - service: climate.set_preset_mode
+              entity_id: "{{ manual_override_active_entity }}"
+          
+          # Zeitstempel setzen
+          - service: input_datetime.set_datetime
             target:
-              entity_id: "{{ trv }}"
+              entity_id: "{{ manual_override_time_entity }}"
             data:
-              preset_mode: "{{ desired_preset }}"
-
-  # Preset-Temperaturen im TRV pflegen
-  - choose:
+              datetime: "{{ now().isoformat() }}"
+          
+          - service: system_log.write
+            data:
+              message: >-
+                TRV {{ trv }}: Manuelle Änderung erkannt 
+                ({{ trigger.from_state.attributes.temperature }}°C -> {{ trigger.to_state.attributes.temperature }}°C).
+                Override für {{ manual_override_duration }}h aktiv.
+                Original-Wert: {{ states(original_setpoint_entity) }}°C
+              level: info
+          
+          # Automation beenden - TRV-Wert bleibt wie manuell eingestellt
+          - stop: "Manuelle Überschreibung aktiv - keine weitere Aktion"
+      
+      # ----------------------------------------
+      # Fall 3: Zeitplan-Änderung während Override
+      # ----------------------------------------
       - conditions:
+          - condition: trigger
+            id: schedule
+          - condition: template
+            value_template: "{{ is_state(manual_override_active_entity, 'on') }}"
+        sequence:
+          - service: input_boolean.turn_off
+            target:
+              entity_id: "{{ manual_override_active_entity }}"
+          - service: system_log.write
+            data:
+              message: >-
+                TRV {{ trv }}: Zeitplanänderung erkannt ({{ states(schedule_entity) }}), 
+                Override vorzeitig beendet
+              level: info
+  
+  # ========================================
+  # NORMALE HEIZUNGSSTEUERUNGS-LOGIK
+  # ========================================
+  
+  # Nur ausführen wenn KEIN Override aktiv ist
+  - condition: template
+    value_template: "{{ is_state(manual_override_active_entity, 'off') }}"
+  
+  - choose:
+      # ----------------------------------------
+      # Priorität 1: Boost-Modus
+      # ----------------------------------------
+      - conditions:
+          - condition: template
+            value_template: "{{ boost_entity | length > 0 }}"
+          - condition: state
+            entity_id: !input boost_entity
+            state: "on"
+        sequence:
+          - service: climate.set_temperature
+            target:
+              entity_id: !input trv
+            data:
+              temperature: "{{ boost_temp }}"
+          - service: system_log.write
+            data:
+              message: "TRV {{ trv }}: Boost-Modus aktiv ({{ boost_temp }}°C)"
+              level: info
+      
+      # ----------------------------------------
+      # Priorität 2: Sommermodus
+      # ----------------------------------------
+      - conditions:
+          - condition: template
+            value_template: "{{ summer_mode_entity | length > 0 }}"
+          - condition: state
+            entity_id: !input summer_mode
+            state: "on"
+        sequence:
+          - service: climate.set_temperature
+            target:
+              entity_id: !input trv
+            data:
+              temperature: "{{ summer_temp }}"
+          - service: system_log.write
+            data:
+              message: "TRV {{ trv }}: Sommermodus aktiv ({{ summer_temp }}°C)"
+              level: info
+      
+      # ----------------------------------------
+      # Priorität 3: Fenster offen
+      # ----------------------------------------
+      - conditions:
+          - condition: template
+            value_template: "{{ window_sensors | length > 0 }}"
           - condition: template
             value_template: >-
-              {{ desired_preset == 'eco'
-                 and eco_number
-                 and ((states(eco_number) | float(0) - eco_value) | abs >= (deadband | float(0.1))) }}
+              {{ expand(window_sensors) | selectattr('state', 'eq', 'on') | list | count > 0 }}
         sequence:
-          - service: number.set_value
+          - service: climate.set_temperature
             target:
-              entity_id: "{{ eco_number }}"
+              entity_id: !input trv
             data:
-              value: "{{ eco_value }}"
-
-  - choose:
+              temperature: "{{ window_open_temp }}"
+          - service: system_log.write
+            data:
+              message: "TRV {{ trv }}: Fenster offen ({{ window_open_temp }}°C)"
+              level: info
+      
+      # ----------------------------------------
+      # Priorität 4: Abwesend
+      # ----------------------------------------
       - conditions:
           - condition: template
-            value_template: >-
-              {{ desired_preset == 'comfort'
-                 and comfort_number
-                 and ((states(comfort_number) | float(0) - comfort_value) | abs >= (deadband | float(0.1))) }}
+            value_template: "{{ presence_entity | length > 0 }}"
+          - condition: state
+            entity_id: !input presence_entity
+            state: "off"
         sequence:
-          - service: number.set_value
+          - service: climate.set_temperature
             target:
-              entity_id: "{{ comfort_number }}"
+              entity_id: !input trv
             data:
-              value: "{{ comfort_value }}"
+              temperature: "{{ away_temp }}"
+          - service: system_log.write
+            data:
+              message: "TRV {{ trv }}: Abwesend ({{ away_temp }}°C)"
+              level: info
+      
+      # ----------------------------------------
+      # Priorität 5: Normaler Zeitplan (Comfort/Eco)
+      # ----------------------------------------
+      - conditions:
+          - condition: state
+            entity_id: !input schedule_entity
+            state: "on"
+        sequence:
+          - service: climate.set_temperature
+            target:
+              entity_id: !input trv
+            data:
+              temperature: "{{ states(comfort_helper) | float }}"
+          - service: system_log.write
+            data:
+              message: "TRV {{ trv }}: Comfort-Modus ({{ states(comfort_helper) }}°C)"
+              level: info
+    
+    # ----------------------------------------
+    # Default: Eco-Modus
+    # ----------------------------------------
+    default:
+      - service: climate.set_temperature
+        target:
+          entity_id: !input trv
+        data:
+          temperature: "{{ states(eco_helper) | float }}"
+      - service: system_log.write
+        data:
+          message: "TRV {{ trv }}: Eco-Modus ({{ states(eco_helper) }}°C)"
+          level: info
