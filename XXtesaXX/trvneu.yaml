@@ -1,0 +1,210 @@
+blueprint:
+  name: Heizungssteuerung TRV mit manueller Override-Funktion (ohne Helper)
+  description: >-
+    Steuert ein Thermostat (TRV) basierend auf einem Zeitplan mit Comfort/Eco-Temperaturen.
+    
+    **NEU:** Manuelle Änderungen am TRV werden temporär übernommen und nach einstellbarer Zeit 
+    automatisch auf den ursprünglichen Wert zurückgesetzt.
+    
+    **OHNE zusätzliche Helper!** Nutzt nur interne Variablen und Timestamps.
+    
+    Features:
+    - Sommer-/Wintermodus
+    - Fensterkontakte
+    - Anwesenheitserkennung
+    - Boost-Funktion
+    - **Temporäre manuelle Überschreibung**
+  domain: automation
+  input:
+    trv:
+      name: Thermostat (TRV)
+      description: Das zu steuernde Thermostat
+      selector:
+        entity:
+          filter:
+            - domain: climate
+    
+    schedule_entity:
+      name: Zeitplan
+      description: Schedule-Entity (on = Comfort, off = Eco)
+      selector:
+        entity:
+          filter:
+            - domain: schedule
+    
+    comfort_helper:
+      name: Comfort-Temperatur Helper
+      description: Input Number für Comfort-Temperatur
+      selector:
+        entity:
+          filter:
+            - domain: input_number
+    
+    eco_helper:
+      name: Eco-Temperatur Helper
+      description: Input Number für Eco-Temperatur
+      selector:
+        entity:
+          filter:
+            - domain: input_number
+    
+    trv_schedule_text:
+      name: TRV Schedule Text Entity
+      description: Text-Entity für TRV-eigenen Zeitplan (wird deaktiviert)
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: text
+          multiple: true
+    
+    summer_mode:
+      name: Sommermodus
+      description: Input Boolean für Sommermodus (Heizung aus)
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+    
+    summer_temp:
+      name: Sommer-Temperatur
+      description: Zieltemperatur im Sommermodus
+      default: 5
+      selector:
+        number:
+          min: 5
+          max: 15
+          step: 0.5
+          unit_of_measurement: "°C"
+    
+    window_sensors:
+      name: Fensterkontakte
+      description: Fensterkontakte (bei offen -> Heizung aus)
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              device_class: window
+          multiple: true
+    
+    window_open_temp:
+      name: Fenster-offen-Temperatur
+      description: Zieltemperatur bei geöffnetem Fenster
+      default: 5
+      selector:
+        number:
+          min: 5
+          max: 15
+          step: 0.5
+          unit_of_measurement: "°C"
+    
+    presence_entity:
+      name: Anwesenheit
+      description: Entity für Anwesenheitserkennung (optional)
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+    
+    away_temp:
+      name: Abwesenheits-Temperatur
+      description: Zieltemperatur bei Abwesenheit
+      default: 16
+      selector:
+        number:
+          min: 5
+          max: 20
+          step: 0.5
+          unit_of_measurement: "°C"
+    
+    boost_entity:
+      name: Boost-Funktion
+      description: Input Boolean für Boost-Modus (optional)
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+    
+    boost_temp:
+      name: Boost-Temperatur
+      description: Zieltemperatur im Boost-Modus
+      default: 25
+      selector:
+        number:
+          min: 20
+          max: 30
+          step: 0.5
+          unit_of_measurement: "°C"
+    
+    accept_manual_setpoint:
+      name: Manuelle Änderungen akzeptieren
+      description: Erlaube temporäre manuelle Änderungen am TRV
+      default: true
+      selector:
+        boolean:
+    
+    manual_override_duration:
+      name: Dauer der manuellen Überschreibung
+      description: Nach dieser Zeit wird der ursprüngliche Wert wiederhergestellt
+      default: 2
+      selector:
+        number:
+          min: 0.5
+          max: 12
+          step: 0.5
+          unit_of_measurement: "h"
+          mode: slider
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  - platform: state
+    entity_id: !input schedule_entity
+    id: schedule
+  
+  - platform: state
+    entity_id: !input comfort_helper
+    id: comfort_temp
+  
+  - platform: state
+    entity_id: !input eco_helper
+    id: eco_temp
+  
+  - platform: state
+    entity_id: !input summer_mode
+    id: summer
+  
+  - platform: state
+    entity_id: !input window_sensors
+    id: window
+  
+  - platform: state
+    entity_id: !input presence_entity
+    id: presence
+  
+  - platform: state
+    entity_id: !input boost_entity
+    id: boost
+  
+  - platform: state
+    entity_id: !input trv
+    attribute: temperature
+    id: manual_setpoint
+  
+  - platform: homeassistant
+    event: start
+    id: startup
+
+variables:
+  trv: !input trv
+  schedule_entity: !input schedule_entity
+  comfort_helper: !input comfort_helper
+  eco_helper: !input eco_helper
+  trv_schedule_texts: !input trv_schedule_text
+  summer_mode_entity: !input summer_mode
+  summer_temp: !input summer_temp 
