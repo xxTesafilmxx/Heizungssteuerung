@@ -103,7 +103,7 @@ blueprint:
           mode: slider
 
     poll_seconds:
-      name: Poll-Intervall (Sekunden)
+      name: Poll-Intervall
       description: 30 ist ein guter Wert
       default: 30
       selector:
